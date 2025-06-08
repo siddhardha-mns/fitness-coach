@@ -16,24 +16,35 @@ st.set_page_config(
 )
 
 # Initialize session state
-if 'gemini_api_key' not in st.session_state:
-    st.session_state.gemini_api_key = ""
-if 'user_profile' not in st.session_state:
-    st.session_state.user_profile = {}
-if 'workout_history' not in st.session_state:
-    st.session_state.workout_history = []
-if 'nutrition_history' not in st.session_state:
-    st.session_state.nutrition_history = []
-if 'water_intake' not in st.session_state:
-    st.session_state.water_intake = 0
-if 'daily_water_goal' not in st.session_state:
-    st.session_state.daily_water_goal = 2000  # ml
+def initialize_session_state():
+    """Initialize all session state variables"""
+    defaults = {
+        'gemini_api_key': "",
+        'user_profile': {},
+        'workout_history': [],
+        'nutrition_history': [],
+        'water_intake': 0,
+        'daily_water_goal': 2000,  # ml
+        'chat_history': [],
+        'sleep_history': []
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+# Initialize session state
+initialize_session_state()
 
 def configure_gemini():
     """Configure Gemini API"""
     if st.session_state.gemini_api_key:
-        genai.configure(api_key=st.session_state.gemini_api_key)
-        return True
+        try:
+            genai.configure(api_key=st.session_state.gemini_api_key)
+            return True
+        except Exception as e:
+            st.error(f"Failed to configure Gemini API: {str(e)}")
+            return False
     return False
 
 def get_ai_response(prompt):
@@ -46,7 +57,7 @@ def get_ai_response(prompt):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error generating AI response: {str(e)}"
 
 # Sidebar Navigation
 st.sidebar.title("🏋️ AI Fitness Coach")
@@ -110,9 +121,6 @@ if page == "🏠 Dashboard":
     # AI Chat Assistant
     st.subheader("🤖 AI Chat Assistant")
     
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    
     # Display chat history
     for chat in st.session_state.chat_history[-5:]:  # Show last 5 messages
         with st.chat_message(chat['role']):
@@ -147,15 +155,18 @@ if page == "🏠 Dashboard":
     st.subheader("📈 Progress Dashboard")
     
     if st.session_state.workout_history:
-        # Create workout frequency chart
-        workout_dates = [w['date'] for w in st.session_state.workout_history]
-        df_workouts = pd.DataFrame({'Date': workout_dates, 'Workouts': [1]*len(workout_dates)})
-        df_workouts['Date'] = pd.to_datetime(df_workouts['Date'])
-        df_workouts_grouped = df_workouts.groupby(df_workouts['Date'].dt.date).sum().reset_index()
-        
-        fig = px.line(df_workouts_grouped, x='Date', y='Workouts', 
-                     title='Workout Frequency Over Time')
-        st.plotly_chart(fig, use_container_width=True)
+        try:
+            # Create workout frequency chart
+            workout_dates = [w['date'] for w in st.session_state.workout_history]
+            df_workouts = pd.DataFrame({'Date': workout_dates, 'Workouts': [1]*len(workout_dates)})
+            df_workouts['Date'] = pd.to_datetime(df_workouts['Date'])
+            df_workouts_grouped = df_workouts.groupby(df_workouts['Date'].dt.date).sum().reset_index()
+            
+            fig = px.line(df_workouts_grouped, x='Date', y='Workouts', 
+                         title='Workout Frequency Over Time')
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error creating workout chart: {str(e)}")
     else:
         st.info("Complete some workouts to see your progress here!")
     
@@ -180,8 +191,6 @@ if page == "🏠 Dashboard":
             'stress': stress_level,
             'recovery': recovery_feeling
         }
-        if 'sleep_history' not in st.session_state:
-            st.session_state.sleep_history = []
         st.session_state.sleep_history.append(sleep_data)
         st.success("Sleep data saved!")
 
