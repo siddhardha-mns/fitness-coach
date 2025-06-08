@@ -1,8 +1,13 @@
 import streamlit as st
-import datetime
 import google.generativeai as genai
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import json
+import time
 
-# Page configuration
+# Configure Streamlit page
 st.set_page_config(
     page_title="AI Fitness Coach",
     page_icon="💪",
@@ -10,802 +15,439 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Gemini Client Class
-class GeminiClient:
-    def __init__(self, api_key):
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-pro')
-    
-    def generate_content(self, prompt):
-        try:
-            response = self.model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            st.error(f"Error generating content: {str(e)}")
-            return None
+# Initialize session state
+if 'gemini_api_key' not in st.session_state:
+    st.session_state.gemini_api_key = ""
+if 'user_profile' not in st.session_state:
+    st.session_state.user_profile = {}
+if 'workout_history' not in st.session_state:
+    st.session_state.workout_history = []
+if 'nutrition_history' not in st.session_state:
+    st.session_state.nutrition_history = []
+if 'water_intake' not in st.session_state:
+    st.session_state.water_intake = 0
+if 'daily_water_goal' not in st.session_state:
+    st.session_state.daily_water_goal = 2000  # ml
 
-# Initialize Gemini client with Streamlit secrets
-@st.cache_resource
-def init_gemini_client():
+def configure_gemini():
+    """Configure Gemini API"""
+    if st.session_state.gemini_api_key:
+        genai.configure(api_key=st.session_state.gemini_api_key)
+        return True
+    return False
+
+def get_ai_response(prompt):
+    """Get response from Gemini AI"""
     try:
-        api_key = st.secrets["GEMINI_API_KEY"]
-        return GeminiClient(api_key)
-    except KeyError:
-        st.error("⚠️ Gemini API key not found in secrets. Please configure GEMINI_API_KEY in Streamlit secrets.")
-        return None
-    except Exception as e:
-        st.error(f"⚠️ Error initializing Gemini client: {str(e)}")
-        return None
-
-# Prompt creation functions
-def create_nutrition_prompt(data):
-    return f"""
-Create a comprehensive, personalized nutrition plan based on the following information:
-
-PERSONAL DETAILS:
-- Age: {data['age']} years
-- Gender: {data['gender']}
-- Height: {data['height']} cm
-- Current Weight: {data['weight']} kg
-- Target Weight: {data['target_weight']} kg
-- Activity Level: {data['activity_level']}
-- Health Conditions: {data.get('health_conditions', 'None')}
-
-NUTRITION GOALS:
-- Primary Goal: {data['primary_goal']}
-- Timeline: {data['timeline']}
-
-DIETARY PREFERENCES:
-- Diet Type: {data['diet_type']}
-- Food Allergies/Intolerances: {', '.join(data.get('food_allergies', []))}
-- Foods Disliked: {', '.join(data.get('dislikes', []))}
-- Food Preferences: {', '.join(data.get('preferences', []))}
-
-LIFESTYLE FACTORS:
-- Meals per Day: {data['meals_per_day']}
-- Cooking Skill: {data['cooking_skill']}
-- Available Cooking Time: {data['cooking_time']}
-- Weekly Budget: {data['budget']}
-- Meal Prep Preference: {data['meal_prep']}
-- Eating Schedule: {data.get('eating_schedule', 'Flexible')}
-- Kitchen Equipment: {', '.join(data.get('kitchen_equipment', []))}
-- Shopping Frequency: {data['shopping_frequency']}
-- Current Supplements: {data.get('supplements', 'None')}
-
-SPECIAL NOTES: {data.get('special_notes', 'None')}
-
-Please provide:
-1. Daily calorie target and macronutrient breakdown
-2. Sample meal plan for one day
-3. Weekly meal prep suggestions
-4. Hydration recommendations
-5. Specific tips based on their goals and preferences
-6. Progress tracking suggestions
-
-Format the response in clear sections with headers and bullet points for easy reading.
-"""
-
-def create_training_prompt(data):
-    return f"""
-Create a comprehensive, personalized training plan based on the following information:
-
-PERSONAL DETAILS:
-- Age: {data['age']} years
-- Gender: {data['gender']}
-- Height: {data['height']} cm
-- Weight: {data['weight']} kg
-- Current Fitness Level: {data['fitness_level']}
-- Activity Level: {data['activity_level']}
-- Medical Conditions/Injuries: {data.get('medical_conditions', 'None')}
-
-FITNESS GOALS:
-- Primary Goal: {data['primary_goal']}
-- Secondary Goals: {', '.join(data.get('secondary_goals', []))}
-- Target Timeline: {data['timeline']}
-
-WORKOUT PREFERENCES:
-- Workout Days per Week: {data['workout_days']}
-- Time per Session: {data['time_per_session']} minutes
-- Workout Location: {data['workout_location']}
-- Available Equipment: {', '.join(data.get('equipment', []))}
-- Preferred Workout Types: {', '.join(data.get('workout_types', []))}
-- Exercise Experience: {', '.join(data.get('exercise_experience', []))}
-
-SCHEDULE & PREFERENCES:
-- Preferred Workout Time: {data.get('workout_time', 'Flexible')}
-- Rest Day Preferences: {data.get('rest_days', 'Flexible')}
-
-SPECIAL NOTES: {data.get('special_notes', 'None')}
-
-Please provide:
-1. Weekly training schedule with specific days
-2. Detailed workout routines for each training day
-3. Warm-up and cool-down recommendations
-4. Exercise descriptions and proper form tips
-5. Progressive overload suggestions
-6. Recovery and rest recommendations
-7. Progress tracking methods
-
-Format the response in clear sections with headers and detailed exercise instructions.
-"""
-
-def main():
-    # Initialize session state
-    if 'gemini_client' not in st.session_state:
-        st.session_state.gemini_client = init_gemini_client()
-    
-    # Sidebar navigation
-    st.sidebar.title("🏋️ AI Fitness Coach")
-    st.sidebar.markdown("---")
-    
-    # Navigation menu
-    page = st.sidebar.radio(
-        "Navigate to:",
-        ["🏠 Home", "💪 Training Plan", "🥗 Nutrition Plan"],
-        index=0
-    )
-    
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### About")
-    st.sidebar.info(
-        "This AI-powered fitness app uses Google's Gemini API to create "
-        "personalized training and nutrition plans tailored to your goals."
-    )
-    
-    # Add API status indicator
-    if st.session_state.gemini_client:
-        st.sidebar.success("✅ AI Service Connected")
-    else:
-        st.sidebar.error("❌ AI Service Unavailable")
-    
-    # Main content area
-    if page == "🏠 Home":
-        show_home_page()
-    elif page == "💪 Training Plan":
-        show_training_page()
-    elif page == "🥗 Nutrition Plan":
-        show_nutrition_page()
-
-def show_home_page():
-    # Hero section
-    st.title("🏋️ AI Fitness Coach")
-    st.markdown("### Your Personal AI-Powered Fitness and Nutrition Companion")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.markdown("""
-        Welcome to your personalized fitness journey! Our AI-powered coach uses advanced 
-        machine learning to create customized training and nutrition plans that adapt to 
-        your unique needs, goals, and lifestyle.
+        if not configure_gemini():
+            return "Please configure your Gemini API key first."
         
-        **🎯 What We Offer:**
-        - **Personalized Training Plans**: Custom workout routines based on your fitness level, 
-          goals, and available equipment
-        - **Smart Nutrition Planning**: Meal plans tailored to your dietary preferences, 
-          restrictions, and health objectives
-        - **AI-Powered Recommendations**: Intelligent suggestions that evolve with your progress
-        """)
+        model = genai.GenerativeModel('gemini-pro')
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+# Sidebar Navigation
+st.sidebar.title("🏋️ AI Fitness Coach")
+
+# API Key Configuration
+with st.sidebar.expander("⚙️ API Configuration"):
+    api_key = st.text_input("Enter Gemini API Key", type="password", 
+                           value=st.session_state.gemini_api_key)
+    if st.button("Save API Key"):
+        st.session_state.gemini_api_key = api_key
+        if api_key:
+            st.success("API Key saved!")
+        else:
+            st.error("Please enter a valid API key")
+
+# Navigation
+page = st.sidebar.selectbox("Navigate", 
+                           ["🏠 Dashboard", "💪 Training Plan", "🥗 Nutrition Plan"])
+
+# Quick Stats in Sidebar
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📊 Quick Stats")
+st.sidebar.metric("Water Intake", f"{st.session_state.water_intake}ml", 
+                 f"{st.session_state.daily_water_goal - st.session_state.water_intake}ml to go")
+
+# Add water intake buttons
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("💧 +250ml"):
+        st.session_state.water_intake += 250
+        st.rerun()
+with col2:
+    if st.button("🚰 +500ml"):
+        st.session_state.water_intake += 500
+        st.rerun()
+
+if st.sidebar.button("🔄 Reset Water"):
+    st.session_state.water_intake = 0
+    st.rerun()
+
+# Main Content Area
+if page == "🏠 Dashboard":
+    st.title("🏠 AI Fitness Dashboard")
+    st.markdown("Welcome to your personalized AI fitness companion!")
     
-    with col2:
-        st.markdown("""
-        ### 🚀 Quick Start
-        1. Choose a service from the sidebar
-        2. Fill in your personal details
-        3. Get your AI-generated plan
-        4. Start your fitness journey!
-        """)
-    
-    # Features section
-    st.markdown("---")
-    st.markdown("## ✨ Key Features")
+    # Water Intake Progress
+    st.subheader("💧 Daily Hydration")
+    water_progress = min(st.session_state.water_intake / st.session_state.daily_water_goal, 1.0)
     
     col1, col2, col3 = st.columns(3)
-    
     with col1:
-        st.markdown("""
-        ### 💪 Training Plans
-        - Beginner to advanced levels
-        - Home and gym workouts
-        - Equipment-based customization
-        - Time-flexible routines
-        - Progress tracking guidance
-        """)
-    
+        st.metric("Current Intake", f"{st.session_state.water_intake}ml")
     with col2:
-        st.markdown("""
-        ### 🥗 Nutrition Plans
-        - Dietary restriction support
-        - Calorie and macro planning
-        - Meal prep suggestions
-        - Budget-conscious options
-        - Cooking time considerations
-        """)
-    
+        st.metric("Daily Goal", f"{st.session_state.daily_water_goal}ml")
     with col3:
-        st.markdown("""
-        ### 🤖 AI Intelligence
-        - Powered by Google Gemini
-        - Personalized recommendations
-        - Evidence-based advice
-        - Continuous adaptation
-        - Expert-level guidance
-        """)
+        st.metric("Progress", f"{water_progress*100:.1f}%")
     
-    # Getting started section
-    st.markdown("---")
-    st.markdown("## 🎯 Ready to Start?")
+    # Water progress bar
+    st.progress(water_progress)
+    
+    # AI Chat Assistant
+    st.subheader("🤖 AI Chat Assistant")
+    
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # Display chat history
+    for chat in st.session_state.chat_history[-5:]:  # Show last 5 messages
+        with st.chat_message(chat['role']):
+            st.write(chat['message'])
+    
+    # Chat input
+    user_question = st.chat_input("Ask your AI fitness coach anything...")
+    
+    if user_question:
+        st.session_state.chat_history.append({'role': 'user', 'message': user_question})
+        
+        with st.chat_message("user"):
+            st.write(user_question)
+        
+        # Generate AI response
+        fitness_prompt = f"""
+        You are an expert fitness coach and nutritionist. Answer the following question 
+        in a helpful, motivating, and professional manner. Keep responses concise but informative.
+        
+        User question: {user_question}
+        
+        User profile: {st.session_state.user_profile if st.session_state.user_profile else 'No profile data available'}
+        """
+        
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                ai_response = get_ai_response(fitness_prompt)
+                st.write(ai_response)
+                st.session_state.chat_history.append({'role': 'assistant', 'message': ai_response})
+    
+    # Progress Dashboard
+    st.subheader("📈 Progress Dashboard")
+    
+    if st.session_state.workout_history:
+        # Create workout frequency chart
+        workout_dates = [w['date'] for w in st.session_state.workout_history]
+        df_workouts = pd.DataFrame({'Date': workout_dates, 'Workouts': [1]*len(workout_dates)})
+        df_workouts['Date'] = pd.to_datetime(df_workouts['Date'])
+        df_workouts_grouped = df_workouts.groupby(df_workouts['Date'].dt.date).sum().reset_index()
+        
+        fig = px.line(df_workouts_grouped, x='Date', y='Workouts', 
+                     title='Workout Frequency Over Time')
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Complete some workouts to see your progress here!")
+    
+    # Sleep and Recovery Section
+    st.subheader("😴 Sleep & Recovery")
     
     col1, col2 = st.columns(2)
-    
     with col1:
-        if st.button("💪 Create Training Plan", use_container_width=True):
-            st.session_state.current_page = "💪 Training Plan"
-            st.rerun()
+        sleep_hours = st.slider("Hours of sleep last night", 0, 12, 8)
+        sleep_quality = st.selectbox("Sleep quality", ["Poor", "Fair", "Good", "Excellent"])
     
     with col2:
-        if st.button("🥗 Create Nutrition Plan", use_container_width=True):
-            st.session_state.current_page = "🥗 Nutrition Plan"
-            st.rerun()
+        stress_level = st.slider("Stress level (1-10)", 1, 10, 5)
+        recovery_feeling = st.selectbox("How recovered do you feel?", 
+                                      ["Very tired", "Tired", "Okay", "Good", "Excellent"])
+    
+    if st.button("💾 Save Sleep Data"):
+        sleep_data = {
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'hours': sleep_hours,
+            'quality': sleep_quality,
+            'stress': stress_level,
+            'recovery': recovery_feeling
+        }
+        if 'sleep_history' not in st.session_state:
+            st.session_state.sleep_history = []
+        st.session_state.sleep_history.append(sleep_data)
+        st.success("Sleep data saved!")
 
-def show_training_page():
-    st.title("💪 Personalized Training Plan Generator")
-    st.markdown("Tell us about yourself and your fitness goals to get a customized workout plan!")
+elif page == "💪 Training Plan":
+    st.title("💪 Personalized Training Plan")
     
-    # Check if Gemini client is available
-    if not st.session_state.get('gemini_client'):
-        st.error("⚠️ AI service is not available. Please check your API configuration.")
-        return
+    # User Input Form
+    st.subheader("📝 Tell us about yourself")
     
-    with st.form("training_form"):
-        st.markdown("### 📊 Personal Information")
-        
+    with st.form("training_profile"):
         col1, col2 = st.columns(2)
         
         with col1:
             age = st.number_input("Age", min_value=16, max_value=80, value=25)
-            gender = st.selectbox("Gender", ["Male", "Female", "Other"])
-            height = st.number_input("Height (cm)", min_value=120, max_value=220, value=170)
             weight = st.number_input("Weight (kg)", min_value=40, max_value=200, value=70)
-        
-        with col2:
-            fitness_level = st.selectbox(
-                "Current Fitness Level",
-                ["Beginner", "Intermediate", "Advanced", "Expert"]
-            )
-            activity_level = st.selectbox(
-                "Current Activity Level",
-                ["Sedentary", "Lightly Active", "Moderately Active", "Very Active", "Extremely Active"]
-            )
-            medical_conditions = st.text_area(
-                "Medical Conditions or Injuries (if any)",
-                placeholder="e.g., lower back pain, knee issues, etc."
-            )
-        
-        st.markdown("### 🎯 Fitness Goals")
-        
-        primary_goal = st.selectbox(
-            "Primary Fitness Goal",
-            [
-                "Weight Loss",
-                "Muscle Building",
-                "Strength Training",
-                "Endurance/Cardio",
-                "General Fitness",
-                "Athletic Performance",
-                "Rehabilitation",
-                "Flexibility/Mobility"
-            ]
-        )
-        
-        secondary_goals = st.multiselect(
-            "Secondary Goals (optional)",
-            [
-                "Improve Posture",
-                "Increase Energy",
-                "Better Sleep",
-                "Stress Relief",
-                "Core Strength",
-                "Balance & Coordination",
-                "Functional Movement"
-            ]
-        )
-        
-        timeline = st.selectbox(
-            "Goal Timeline",
-            ["1-2 months", "3-6 months", "6-12 months", "Long-term lifestyle change"]
-        )
-        
-        st.markdown("### 🏋️ Workout Preferences")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            workout_days = st.slider("Workout Days per Week", 2, 7, 4)
-            time_per_session = st.selectbox(
-                "Time per Session (minutes)",
-                ["15-30", "30-45", "45-60", "60-90", "90+"]
-            )
-            workout_location = st.selectbox(
-                "Workout Location",
-                ["Home", "Gym", "Outdoor", "Mixed (Home + Gym)"]
-            )
-        
-        with col2:
-            equipment = st.multiselect(
-                "Available Equipment",
-                [
-                    "No Equipment (Bodyweight)",
-                    "Dumbbells",
-                    "Resistance Bands",
-                    "Pull-up Bar",
-                    "Kettlebells",
-                    "Barbell",
-                    "Cable Machine",
-                    "Cardio Equipment",
-                    "Full Gym Access"
-                ]
-            )
-            
-            workout_types = st.multiselect(
-                "Preferred Workout Types",
-                [
-                    "Strength Training",
-                    "Cardio/HIIT",
-                    "Yoga/Pilates",
-                    "Functional Training",
-                    "Bodyweight Exercises",
-                    "Olympic Lifting",
-                    "Circuit Training",
-                    "Sports-Specific"
-                ]
-            )
-        
-        st.markdown("### ⏰ Schedule Preferences")
-        
-        workout_time = st.selectbox(
-            "Preferred Workout Time",
-            ["Early Morning", "Morning", "Afternoon", "Evening", "Night", "Flexible"]
-        )
-        
-        rest_days = st.text_input(
-            "Preferred Rest Days",
-            placeholder="e.g., Wednesday, Sunday or Flexible"
-        )
-        
-        exercise_experience = st.multiselect(
-            "Previous Exercise Experience",
-            [
-                "Weight Training",
-                "Running/Cardio",
-                "Sports",
-                "Yoga/Pilates",
-                "Martial Arts",
-                "Dancing",
-                "Swimming",
-                "Cycling"
-            ]
-        )
-        
-        st.markdown("### 💡 Additional Information")
-        
-        special_notes = st.text_area(
-            "Special Requests or Notes",
-            placeholder="Any specific requirements, preferences, or additional information..."
-        )
-        
-        # Form submission
-        submitted = st.form_submit_button("🚀 Generate My Training Plan", use_container_width=True)
-        
-        if submitted:
-            # Store form data in session state
-            st.session_state.training_data = {
-                'age': age,
-                'gender': gender,
-                'height': height,
-                'weight': weight,
-                'fitness_level': fitness_level,
-                'activity_level': activity_level,
-                'medical_conditions': medical_conditions,
-                'primary_goal': primary_goal,
-                'secondary_goals': secondary_goals,
-                'timeline': timeline,
-                'workout_days': workout_days,
-                'time_per_session': time_per_session,
-                'workout_location': workout_location,
-                'equipment': equipment,
-                'workout_types': workout_types,
-                'workout_time': workout_time,
-                'rest_days': rest_days,
-                'exercise_experience': exercise_experience,
-                'special_notes': special_notes
-            }
-            
-            # Generate training plan
-            generate_training_plan()
-
-def generate_training_plan():
-    """Generate and display the training plan using Gemini API"""
-    
-    if 'training_data' not in st.session_state:
-        st.error("No training data found. Please fill out the form first.")
-        return
-    
-    st.markdown("---")
-    st.markdown("## 💪 Your Personalized Training Plan")
-    
-    with st.spinner("🤖 AI is creating your personalized training plan..."):
-        try:
-            # Create prompt for Gemini
-            prompt = create_training_prompt(st.session_state.training_data)
-            
-            # Get response from Gemini
-            response = st.session_state.gemini_client.generate_content(prompt)
-            
-            if response:
-                st.markdown("### 📋 Generated Training Plan")
-                st.markdown(response)
-                
-                # Store the generated plan
-                st.session_state.generated_training_plan = response
-                
-                # Action buttons
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("🔄 Generate New Plan"):
-                        st.rerun()
-                
-                with col2:
-                    if st.button("📱 Save Plan"):
-                        st.success("Plan saved to your session!")
-                
-                with col3:
-                    # Create downloadable text file
-                    plan_text = f"""
-PERSONALIZED TRAINING PLAN
-Generated on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-{response}
-
----
-Generated by AI Fitness Coach
-                    """.strip()
-                    
-                    st.download_button(
-                        label="📥 Download Plan",
-                        data=plan_text,
-                        file_name=f"training_plan_{datetime.datetime.now().strftime('%Y%m%d')}.txt",
-                        mime="text/plain"
-                    )
-                
-                # Training tips section
-                st.markdown("---")
-                st.markdown("### 💡 Training Success Tips")
-                st.info("""
-                - **Start Slowly**: Begin with lighter weights and gradually increase
-                - **Focus on Form**: Proper technique prevents injury and maximizes results
-                - **Stay Consistent**: Regular workouts are more effective than sporadic intense sessions
-                - **Listen to Your Body**: Rest when you need it, push when you can
-                - **Track Progress**: Keep a workout log to monitor improvements
-                - **Warm Up & Cool Down**: Always include proper warm-up and stretching
-                - **Stay Hydrated**: Drink water before, during, and after workouts
-                - **Get Adequate Rest**: Muscles grow during rest, not just during workouts
-                """)
-                
-            else:
-                st.error("Failed to generate training plan. Please try again.")
-                
-        except Exception as e:
-            st.error(f"An error occurred while generating your training plan: {str(e)}")
-
-def show_nutrition_page():
-    st.title("🥗 Personalized Nutrition Plan Generator")
-    st.markdown("Let's create a customized meal plan that fits your lifestyle and goals!")
-    
-    # Check if Gemini client is available
-    if not st.session_state.get('gemini_client'):
-        st.error("⚠️ AI service is not available. Please check your API configuration.")
-        return
-    
-    with st.form("nutrition_form"):
-        st.markdown("### 👤 Personal Information")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            age = st.number_input("Age", min_value=16, max_value=80, value=25)
+            height = st.number_input("Height (cm)", min_value=140, max_value=220, value=170)
             gender = st.selectbox("Gender", ["Male", "Female", "Other"])
-            height = st.number_input("Height (cm)", min_value=120, max_value=220, value=170)
-            weight = st.number_input("Current Weight (kg)", min_value=40, max_value=200, value=70)
         
         with col2:
-            target_weight = st.number_input(
-                "Target Weight (kg)", 
-                min_value=40, 
-                max_value=200, 
-                value=weight,
-                help="Leave same as current weight if maintaining"
-            )
-            activity_level = st.selectbox(
-                "Activity Level",
-                ["Sedentary", "Lightly Active", "Moderately Active", "Very Active", "Extremely Active"]
-            )
-            health_conditions = st.text_area(
-                "Health Conditions (if any)",
-                placeholder="e.g., diabetes, high cholesterol, food allergies, etc."
-            )
+            fitness_level = st.selectbox("Current Fitness Level", 
+                                       ["Beginner", "Intermediate", "Advanced", "Expert"])
+            primary_goal = st.selectbox("Primary Goal", 
+                                      ["Weight Loss", "Muscle Gain", "Strength", "Endurance", 
+                                       "General Fitness", "Athletic Performance"])
+            workout_days = st.slider("Days per week available for workout", 1, 7, 4)
+            session_duration = st.slider("Preferred session duration (minutes)", 15, 120, 60)
         
-        st.markdown("### 🎯 Nutrition Goals")
+        # Additional preferences
+        st.subheader("🎯 Preferences & Limitations")
         
-        primary_goal = st.selectbox(
-            "Primary Nutrition Goal",
-            [
-                "Weight Loss",
-                "Weight Gain",
-                "Muscle Building",
-                "Weight Maintenance",
-                "Improved Health",
-                "Better Energy",
-                "Athletic Performance",
-                "Medical Dietary Needs"
-            ]
-        )
+        col3, col4 = st.columns(2)
+        with col3:
+            equipment = st.multiselect("Available Equipment", 
+                                     ["None (Bodyweight)", "Dumbbells", "Barbells", "Resistance Bands", 
+                                      "Pull-up Bar", "Gym Access", "Kettlebells", "Cardio Machines"])
+            preferred_exercises = st.multiselect("Preferred Exercise Types",
+                                               ["Strength Training", "Cardio", "HIIT", "Yoga", 
+                                                "Pilates", "Swimming", "Running", "Cycling"])
         
-        timeline = st.selectbox(
-            "Goal Timeline",
-            ["1-2 months", "3-6 months", "6-12 months", "Long-term lifestyle change"]
-        )
+        with col4:
+            injuries = st.text_area("Any injuries or limitations?", 
+                                  placeholder="e.g., knee injury, back problems...")
+            experience = st.text_area("Previous exercise experience?",
+                                    placeholder="e.g., played sports, gym experience...")
         
-        st.markdown("### 🍽️ Dietary Preferences & Restrictions")
+        submit_training = st.form_submit_button("🚀 Generate Training Plan", use_container_width=True)
+    
+    if submit_training:
+        # Save user profile
+        training_profile = {
+            'age': age, 'weight': weight, 'height': height, 'gender': gender,
+            'fitness_level': fitness_level, 'primary_goal': primary_goal,
+            'workout_days': workout_days, 'session_duration': session_duration,
+            'equipment': equipment, 'preferred_exercises': preferred_exercises,
+            'injuries': injuries, 'experience': experience
+        }
+        st.session_state.user_profile.update(training_profile)
         
+        # Generate AI training plan
+        training_prompt = f"""
+        Create a detailed, personalized workout plan based on the following information:
+        
+        User Profile:
+        - Age: {age}, Weight: {weight}kg, Height: {height}cm, Gender: {gender}
+        - Fitness Level: {fitness_level}
+        - Primary Goal: {primary_goal}
+        - Available Days: {workout_days} days/week
+        - Session Duration: {session_duration} minutes
+        - Equipment: {', '.join(equipment) if equipment else 'None'}
+        - Preferred Exercises: {', '.join(preferred_exercises) if preferred_exercises else 'None specified'}
+        - Injuries/Limitations: {injuries if injuries else 'None'}
+        - Experience: {experience if experience else 'Beginner'}
+        
+        Please provide:
+        1. A weekly workout schedule
+        2. Specific exercises for each day
+        3. Sets, reps, and rest periods
+        4. Progression recommendations
+        5. Important safety tips
+        
+        Format the response in a clear, easy-to-follow structure.
+        """
+        
+        with st.spinner("Generating your personalized training plan..."):
+            training_plan = get_ai_response(training_prompt)
+        
+        st.subheader("🎯 Your Personalized Training Plan")
+        st.markdown(training_plan)
+        
+        # Save workout plan
+        if st.button("💾 Save This Workout Plan"):
+            workout_entry = {
+                'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'plan': training_plan,
+                'profile': training_profile
+            }
+            st.session_state.workout_history.append(workout_entry)
+            st.success("Workout plan saved to your history!")
+    
+    # Display previous workouts
+    if st.session_state.workout_history:
+        st.subheader("📚 Previous Workout Plans")
+        for i, workout in enumerate(reversed(st.session_state.workout_history[-3:])):  # Show last 3
+            with st.expander(f"Workout Plan {len(st.session_state.workout_history)-i} - {workout['date']}"):
+                st.markdown(workout['plan'])
+
+elif page == "🥗 Nutrition Plan":
+    st.title("🥗 Personalized Nutrition Plan")
+    
+    # Nutrition Input Form
+    st.subheader("🍎 Nutrition Profile")
+    
+    with st.form("nutrition_profile"):
         col1, col2 = st.columns(2)
         
         with col1:
-            diet_type = st.selectbox(
-                "Diet Type",
-                [
-                    "No Specific Diet",
-                    "Vegetarian",
-                    "Vegan",
-                    "Pescatarian",
-                    "Keto",
-                    "Paleo",
-                    "Mediterranean",
-                    "Low-Carb",
-                    "Low-Fat",
-                    "DASH",
-                    "Intermittent Fasting"
-                ]
-            )
-            
-            food_allergies = st.multiselect(
-                "Food Allergies/Intolerances",
-                [
-                    "None",
-                    "Nuts",
-                    "Dairy/Lactose",
-                    "Gluten",
-                    "Shellfish",
-                    "Eggs",
-                    "Soy",
-                    "Fish",
-                    "Sesame"
-                ]
-            )
+            # Basic info (use saved profile if available)
+            current_weight = st.number_input("Current Weight (kg)", 
+                                           value=st.session_state.user_profile.get('weight', 70))
+            target_weight = st.number_input("Target Weight (kg)", 
+                                          value=current_weight)
+            activity_level = st.selectbox("Activity Level",
+                                        ["Sedentary", "Lightly Active", "Moderately Active", 
+                                         "Very Active", "Extremely Active"])
+            nutrition_goal = st.selectbox("Nutrition Goal",
+                                        ["Weight Loss", "Weight Gain", "Muscle Gain", 
+                                         "Maintenance", "Athletic Performance"])
         
         with col2:
-            dislikes = st.multiselect(
-                "Foods You Dislike",
-                [
-                    "Seafood",
-                    "Spicy Food",
-                    "Mushrooms",
-                    "Onions",
-                    "Garlic",
-                    "Cilantro",
-                    "Olives",
-                    "Tomatoes",
-                    "Beans/Legumes",
-                    "Leafy Greens"
-                ]
-            )
+            dietary_preference = st.selectbox("Dietary Preference",
+                                            ["Omnivore", "Vegetarian", "Vegan", "Pescatarian", 
+                                             "Keto", "Paleo", "Mediterranean"])
+            meals_per_day = st.slider("Preferred meals per day", 3, 6, 3)
+            budget_range = st.selectbox("Budget Range",
+                                      ["Low ($5-10/day)", "Moderate ($10-15/day)", 
+                                       "High ($15-25/day)", "Premium ($25+/day)"])
+            cooking_time = st.selectbox("Available cooking time",
+                                      ["Minimal (15 min)", "Short (30 min)", 
+                                       "Moderate (45 min)", "Long (1+ hour)"])
+        
+        # Food preferences and restrictions
+        st.subheader("🥘 Food Preferences")
+        
+        col3, col4 = st.columns(2)
+        with col3:
+            food_allergies = st.multiselect("Food Allergies/Intolerances",
+                                          ["None", "Nuts", "Dairy", "Gluten", "Eggs", "Soy", 
+                                           "Shellfish", "Fish", "Other"])
+            disliked_foods = st.text_area("Foods you dislike",
+                                        placeholder="e.g., broccoli, mushrooms...")
+        
+        with col4:
+            favorite_cuisines = st.multiselect("Favorite Cuisines",
+                                             ["Italian", "Asian", "Mexican", "Indian", "Mediterranean", 
+                                              "American", "Thai", "Japanese", "Middle Eastern"])
+            health_conditions = st.text_area("Health conditions affecting diet",
+                                           placeholder="e.g., diabetes, high blood pressure...")
+        
+        submit_nutrition = st.form_submit_button("🥗 Generate Nutrition Plan", use_container_width=True)
+    
+    if submit_nutrition:
+        # Save nutrition profile
+        nutrition_profile = {
+            'current_weight': current_weight, 'target_weight': target_weight,
+            'activity_level': activity_level, 'nutrition_goal': nutrition_goal,
+            'dietary_preference': dietary_preference, 'meals_per_day': meals_per_day,
+            'budget_range': budget_range, 'cooking_time': cooking_time,
+            'food_allergies': food_allergies, 'disliked_foods': disliked_foods,
+            'favorite_cuisines': favorite_cuisines, 'health_conditions': health_conditions
+        }
+        st.session_state.user_profile.update(nutrition_profile)
+        
+        # Generate AI nutrition plan
+        nutrition_prompt = f"""
+        Create a detailed, personalized nutrition and meal plan based on the following information:
+        
+        User Profile:
+        - Current Weight: {current_weight}kg, Target Weight: {target_weight}kg
+        - Activity Level: {activity_level}
+        - Nutrition Goal: {nutrition_goal}
+        - Dietary Preference: {dietary_preference}
+        - Meals per Day: {meals_per_day}
+        - Budget: {budget_range}
+        - Cooking Time Available: {cooking_time}
+        - Food Allergies: {', '.join(food_allergies) if food_allergies else 'None'}
+        - Disliked Foods: {disliked_foods if disliked_foods else 'None specified'}
+        - Favorite Cuisines: {', '.join(favorite_cuisines) if favorite_cuisines else 'None specified'}
+        - Health Conditions: {health_conditions if health_conditions else 'None'}
+        
+        Please provide:
+        1. Daily calorie and macro targets
+        2. A sample 7-day meal plan
+        3. Specific meal ideas for breakfast, lunch, dinner (and snacks if applicable)
+        4. Shopping list suggestions
+        5. Meal prep tips
+        6. Hydration recommendations
+        
+        Make sure all recommendations align with their dietary preferences and restrictions.
+        """
+        
+        with st.spinner("Creating your personalized nutrition plan..."):
+            nutrition_plan = get_ai_response(nutrition_prompt)
+        
+        st.subheader("🎯 Your Personalized Nutrition Plan")
+        st.markdown(nutrition_plan)
+        
+        # Save nutrition plan
+        if st.button("💾 Save This Nutrition Plan"):
+            nutrition_entry = {
+                'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'plan': nutrition_plan,
+                'profile': nutrition_profile
+            }
+            st.session_state.nutrition_history.append(nutrition_entry)
+            st.success("Nutrition plan saved to your history!")
+    
+    # Calorie Calculator
+    st.subheader("🔢 Quick Calorie Calculator")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        calc_weight = st.number_input("Weight (kg)", value=70, key="calc_weight")
+        calc_height = st.number_input("Height (cm)", value=170, key="calc_height")
+        calc_age = st.number_input("Age", value=25, key="calc_age")
+        calc_gender = st.selectbox("Gender", ["Male", "Female"], key="calc_gender")
+    
+    with col2:
+        calc_activity = st.selectbox("Activity Level", 
+                                   ["Sedentary (1.2)", "Light (1.375)", "Moderate (1.55)", 
+                                    "Active (1.725)", "Very Active (1.9)"], key="calc_activity")
+        
+        if st.button("Calculate BMR & TDEE"):
+            # Calculate BMR using Mifflin-St Jeor Equation
+            if calc_gender == "Male":
+                bmr = 10 * calc_weight + 6.25 * calc_height - 5 * calc_age + 5
+            else:
+                bmr = 10 * calc_weight + 6.25 * calc_height - 5 * calc_age - 161
             
-            preferences = st.multiselect(
-                "Food Preferences",
-                [
-                    "Organic Foods",
-                    "Locally Sourced",
-                    "Minimal Processing",
-                    "High Protein",
-                    "High Fiber",
-                    "Low Sodium",
-                    "Low Sugar",
-                    "Fermented Foods"
-                ]
-            )
-        
-        st.markdown("### 🕐 Lifestyle & Practical Considerations")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            meals_per_day = st.slider("Preferred Meals per Day", 2, 6, 3)
-            
-            cooking_skill = st.selectbox(
-                "Cooking Skill Level",
-                ["Beginner", "Intermediate", "Advanced", "Professional"]
-            )
-            
-            cooking_time = st.selectbox(
-                "Available Cooking Time",
-                ["15 minutes or less", "15-30 minutes", "30-60 minutes", "60+ minutes", "Meal prep sessions"]
-            )
-        
-        with col2:
-            budget = st.selectbox(
-                "Weekly Food Budget",
-                ["Under $50", "$50-100", "$100-150", "$150-200", "$200+", "No specific budget"]
-            )
-            
-            meal_prep = st.selectbox(
-                "Meal Prep Preference",
-                ["No meal prep", "Some meal prep", "Extensive meal prep", "Batch cooking"]
-            )
-            
-            eating_schedule = st.text_input(
-                "Eating Schedule Preferences",
-                placeholder="e.g., breakfast at 7am, lunch at 12pm, dinner at 7pm"
-            )
-        
-        st.markdown("### 🛒 Shopping & Kitchen Setup")
-        
-        kitchen_equipment = st.multiselect(
-            "Available Kitchen Equipment",
-            [
-                "Basic stove/oven",
-                "Microwave",
-                "Blender",
-                "Food processor",
-                "Slow cooker",
-                "Air fryer",
-                "Grill",
-                "Steamer",
-                "Pressure cooker",
-                "Well-stocked pantry"
-            ]
-        )
-        
-        shopping_frequency = st.selectbox(
-            "Grocery Shopping Frequency",
-            ["Daily", "Every 2-3 days", "Weekly", "Bi-weekly", "Monthly"]
-        )
-        
-        st.markdown("### 💡 Additional Information")
-        
-        supplements = st.text_area(
-            "Current Supplements (if any)",
-            placeholder="e.g., multivitamin, protein powder, omega-3, etc."
-        )
-        
-        special_notes = st.text_area(
-            "Special Requests or Notes",
-            placeholder="Any specific requirements, cultural preferences, or additional information..."
-        )
-        
-        # Form submission
-        submitted = st.form_submit_button("🚀 Generate My Nutrition Plan", use_container_width=True)
-        
-        if submitted:
-            # Validate required fields
-            if not kitchen_equipment:
-                st.error("Please select at least one kitchen equipment option.")
-                return
-            
-            # Store form data in session state
-            st.session_state.nutrition_data = {
-                'age': age,
-                'gender': gender,
-                'height': height,
-                'weight': weight,
-                'target_weight': target_weight,
-                'activity_level': activity_level,
-                'health_conditions': health_conditions,
-                'primary_goal': primary_goal,
-                'timeline': timeline,
-                'diet_type': diet_type,
-                'food_allergies': food_allergies,
-                'dislikes': dislikes,
-                'preferences': preferences,
-                'meals_per_day': meals_per_day,
-                'cooking_skill': cooking_skill,
-                'cooking_time': cooking_time,
-                'budget': budget,
-                'meal_prep': meal_prep,
-                'eating_schedule': eating_schedule,
-                'kitchen_equipment': kitchen_equipment,
-                'shopping_frequency': shopping_frequency,
-                'supplements': supplements,
-                'special_notes': special_notes
+            # Activity multipliers
+            activity_multipliers = {
+                "Sedentary (1.2)": 1.2,
+                "Light (1.375)": 1.375,
+                "Moderate (1.55)": 1.55,
+                "Active (1.725)": 1.725,
+                "Very Active (1.9)": 1.9
             }
             
-            # Generate nutrition plan
-            generate_nutrition_plan()
-
-def generate_nutrition_plan():
-    """Generate and display the nutrition plan using Gemini API"""
-    
-    if 'nutrition_data' not in st.session_state:
-        st.error("No nutrition data found. Please fill out the form first.")
-        return
-    
-    st.markdown("---")
-    st.markdown("## 🍽️ Your Personalized Nutrition Plan")
-    
-    with st.spinner("🤖 AI is creating your personalized nutrition plan..."):
-        try:
-            # Create prompt for Gemini
-            prompt = create_nutrition_prompt(st.session_state.nutrition_data)
+            tdee = bmr * activity_multipliers[calc_activity]
             
-            # Get response from Gemini
-            response = st.session_state.gemini_client.generate_content(prompt)
-            
-            if response:
-                st.markdown("### 📋 Generated Nutrition Plan")
-                st.markdown(response)
-                
-                # Store the generated plan
-                st.session_state.generated_nutrition_plan = response
-                
-                # Action buttons
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("🔄 Generate New Plan"):
-                        st.rerun()
-                
-                with col2:
-                    if st.button("📱 Save Plan"):
-                        st.success("Plan saved to your session!")
-                
-                with col3:
-                    # Create downloadable text file
-                    plan_text = f"""
-PERSONALIZED NUTRITION PLAN
-Generated on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            st.success(f"**BMR:** {bmr:.0f} calories/day")
+            st.success(f"**TDEE:** {tdee:.0f} calories/day")
+            st.info(f"For weight loss: {tdee-500:.0f} calories/day")
+            st.info(f"For weight gain: {tdee+500:.0f} calories/day")
+    
+    # Display previous nutrition plans
+    if st.session_state.nutrition_history:
+        st.subheader("📚 Previous Nutrition Plans")
+        for i, plan in enumerate(reversed(st.session_state.nutrition_history[-3:])):  # Show last 3
+            with st.expander(f"Nutrition Plan {len(st.session_state.nutrition_history)-i} - {plan['date']}"):
+                st.markdown(plan['plan'])
 
-{response}
-
----
-Generated by AI Fitness Coach
-                    """.strip()
-                    
-                    st.download_button(
-                        label="📥 Download Plan",
-                        data=plan_text,
-                        file_name=f"nutrition_plan_{datetime.datetime.now().strftime('%Y%m%d')}.txt",
-                        mime="text/plain"
-                    )
-                
-                # Nutrition tips section
-                st.markdown("---")
-                st.markdown("### 💡 Nutrition Success Tips")
-                st.info("""
-                - **Gradual Changes**: Make small, sustainable changes rather than drastic overhauls
-                - **Stay Hydrated**: Aim for 8-10 glasses of water daily
-                - **Portion Control**: Use smaller plates and listen to hunger cues
-                - **Meal Timing**: Eat regular meals to maintain stable energy levels
-                - **Read Labels**: Understand nutritional information on packaged foods
-                - **Cook at Home**: Prepare meals when possible for better control
-                - **Track Progress**: Keep a food diary or use nutrition apps
-                - **Be Patient**: Lasting changes take time - focus on consistency over perfection
-                """)
-                
-            else:
-                st.error("Failed to generate nutrition plan. Please try again.")
-                
-        except Exception as e:
-            st.error(f"An error occurred while generating your nutrition plan: {str(e)}")
-
-if __name__ == "__main__":
-    main()
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center'>
+    <p>💪 AI Fitness Coach - Your Personal Health & Fitness Companion</p>
+    <p><small>Powered by Google Gemini AI | Built with Streamlit</small></p>
+</div>
+""", unsafe_allow_html=True)
